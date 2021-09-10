@@ -1,0 +1,355 @@
+---
+title: "ME906 - Métodos em Aprendizado Supervisionado de Máquina"
+subtitle: Atividade 02
+output:
+  html_notebook: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+# Não altere esse chunk
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen=9999)
+``` 
+
+
+```{r,message=FALSE,warning=FALSE,results='hide'}
+# Carregue os pacotes aqui
+library(ISLR2)
+library(tidymodels)
+library(ggpubr)
+library(GGally)
+library(kableExtra)
+library(leaps)
+library(tinytex)
+```
+
+# Objetivo
+
+Encontrar um bom modelo para predizer a variável `Sales`, baseando-se nas informações disponíveis no conjunto de dados `Carseats`. Apenas modelos de regressão linear (simples ou múltipla) serão considerados.
+
+# Dados
+
+```{r}
+#Carrega o banco de dados
+data(Carseats)
+#Calcula a correlação entre as variáveis Price e CompPrice
+corPrice = cor(Carseats$Price ,Carseats$CompPrice)
+```
+O conjunto de dados `Carseats`, disponível no pacote `ISLR2`, contém informações de vendas de cadeirinhas de infantis para automóveis de uma determinada marca em `r nrow(Carseats)` lojas diferentes e `r ncol(Carseats)` variáveis:
+
+-   `Sales`: unidades de venda em milhares;
+-   `CompPrice`: preço do competidor (em dólares);
+-   `Income`: renda média da comunidade local em 1000 dólares;
+-   `Advertising`: orçamento local para anúncios em 1000 dólares;
+-   `Population`: população regional em milhares;
+-   `Price`: preço da cadeirinha em dólares;
+-   `ShelveLoc`: qualidade da localização do produto na prateleira (Bad, Good ou Medium);
+-   `Age`: idade média da população local (em anos);
+-   `Education`: nível médio de educação da população local (em anos);
+-   `Urban`: fator indicando se a loja está em uma área urbana ou não;
+-   `US`: fator indicando se a loja é nos EUA ou não.
+
+# Divisão dos dados
+
+<!-- Dados divididos em 60% treinamento, 20% validação e 20% teste. Cite quantas obs ficaram em cada conjunto de dados. -->
+
+<!-- Explique o propósito dessa divisão. Não altere o código, assim todos terão os mesmos conjuntos de dados  -->
+
+```{r}
+#Quebra os niveis da variável ShelveLoc em duas variáveis e padroniza as variáveis númericas
+Carseats = Carseats %>% 
+  mutate(PriceDif = (Price-CompPrice)/1000, ShelveLocGood = factor(case_when(ShelveLoc == "Good" ~ 1, TRUE ~ 0 )), ShelveLocMedium = factor(case_when(ShelveLoc == "Medium" ~ 1, TRUE ~ 0))) %>% 
+  select(-Price,-CompPrice,-ShelveLoc) %>% 
+  mutate_if(is.numeric, scale)
+```
+
+
+```{r}
+#Faz a divisão do banco de dados em treino, validação e teste.
+set.seed(22021)
+split_teste <- initial_split(Carseats, prop=0.8)
+
+#dados teste (dados "do gerente")
+teste <- split_teste %>% testing()
+
+# dados treinamento com validação
+treino_e_valid <- split_teste %>% training()
+
+split_treino <- initial_split(treino_e_valid, prop=0.75)
+
+#dados treinamento
+treino <- split_treino %>% training()
+
+#dados validação
+valid <- split_treino %>% testing()
+```
+
+# Análise exploratória
+
+<!-- Desconsidere os dados teste e apresente análise exploratória relevante dos dados treinamento+validação para auxiliar nos passos iniciais da busca por um modelo.  -->
+
+<!-- Caso decida utilizar transformação de alguma variável, criar outra variável, padronizar, etc... Aqui é o momento de motivar essas decisões. Se for este o caso, acrescente um parágrafo explicando as transformações que serão feitas na base de dados (preprocessamento)-->
+
+
+No banco de dados `Carseats`, as variáveis `CompPrice` e `Price` representam, respectivamente, o preço de venda da concorrência e o preço de venda da marca em questão em cada uma das lojas do banco de dados. Devido a natureza semelhante dessas duas variáveis e sua alta correlação (coeficiente de correlação de Pearson igual a `r corPrice`), elas foram combinadas numa terceira variável chamada `PriceDif`, que descreve a diferença de preço do produto entre marca e a sua principal rival, em dólares, de forma que valores negativos de `PriceDif` indicam o quão mais barato é o valor da cadeirinha em relação à concorrência.
+
+Também foi considerado no banco de dados uma padronização em relação às variáveis numéricas, dado que há uma grande divergência de escala entre as variáveis. Um exemplo dessa divergência seria a variável `Population` em escala de centenas de milhares enquanto que a variável `PriceDif` e `Age` são variaveis em escala de dezenas.
+
+Na Tabela foram calculadas as correlações entre as variáveis numéricas após a padronização:
+
+### Correlação entre as variáveis númericas padronizadas
+
+```{r cor}
+#Apresenta a tabala de correlação entre as variáveis númericas
+kable(cor(keep(Carseats, is.numeric)[2:7,2:7]),caption = "Tabela de correlação entre as variáveis númericas",label = "cor")%>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), font_size = 10)
+```
+ 
+Como é possível observar na tabela, existe uma alta correlação entre as variáveis `PriceDif` e `Advertising`. Além dessas, também há uma alta correlação entre as variáveis `Education`  e `Income`, sendo assim, para evitar quaisquer problemas envolvendo multicolinearidade, destas serão consideradas apenas `PriceDif` e `Income` para a seleção dos modelos de regressão.
+
+
+```{r}
+#Income e sales
+treino_e_valid %>%
+  ggplot() +
+  geom_point(aes(x=PriceDif,y=Sales), color = "darkorchid2") +
+  theme_bw()+
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.title = element_text(size=14), 
+        legend.text = element_text(size=12),
+        axis.text.x=element_text(size=12),
+        axis.text.y=element_text(size=12)) -> PdfSalPlot
+
+#Income e sales
+treino_e_valid %>%
+  ggplot() +
+  geom_point(aes(x=Income,y=Sales), color = "turquoise2") +
+  theme_bw()+
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.title = element_text(size=14), 
+        legend.text = element_text(size=12),
+        axis.text.x=element_text(size=12),
+        axis.text.y=element_text(size=12)) -> IncSalPlot
+
+#Advertising e sales
+#treino_e_valid %>%
+  #ggplot() +
+  #geom_point(aes(x=Advertising,y=Sales)) +
+  #theme_bw() -> AdvSalPlot
+
+#Population e sales
+treino_e_valid %>%
+  ggplot() +
+  geom_point(aes(x=Population,y=Sales), color = "darkgoldenrod") +
+  theme_bw()+
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.title = element_text(size=14), 
+        legend.text = element_text(size=12),
+        axis.text.x=element_text(size=12),
+        axis.text.y=element_text(size=12)) -> PopSalPlot
+
+#Age e sales
+treino_e_valid %>%
+  ggplot() +
+  geom_point(aes(x=Age,y=Sales), color = "darkorange1") +
+  theme_bw()+
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.title = element_text(size=14), 
+        legend.text = element_text(size=12),
+        axis.text.x=element_text(size=12),
+        axis.text.y=element_text(size=12)) -> AgeSalPlot
+
+#Education e sales
+#treino_e_valid %>%
+  #ggplot() +
+  #geom_point(aes(x=Education,y=Sales)) +
+  #theme_bw() -> EduSalPlot
+
+#ShelveLoc1 e sales
+treino_e_valid %>%
+ group_by(ShelveLocGood) %>%
+  summarise(Sales = sum(Sales)) %>%
+  ggplot() +
+  geom_bar(aes(x=ShelveLocGood,y=Sales), stat = "identity", fill = "deepskyblue1", colour="darkblue") +
+  theme_bw()+
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.title = element_text(size=14), 
+        legend.text = element_text(size=12),
+        axis.text.x=element_text(size=12),
+        axis.text.y=element_text(size=12)) -> Slc1SalPlot
+
+#ShelveLoc2 e sales
+treino_e_valid %>%
+ group_by(ShelveLocMedium) %>%
+  summarise(Sales = sum(Sales)) %>%
+  ggplot() +
+  geom_bar(aes(x=ShelveLocMedium,y=Sales), stat = "identity", fill = "khaki2", colour="yellow") +
+  theme_bw()+
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.title = element_text(size=14), 
+        legend.text = element_text(size=12),
+        axis.text.x=element_text(size=12),
+        axis.text.y=element_text(size=12)) -> Slc2SalPlot
+
+#Urban e sales
+treino_e_valid %>%
+  group_by(Urban) %>%
+  summarise(Sales = sum(Sales)) %>%
+  ggplot() +
+  geom_bar(aes(x=Urban,y=Sales), stat = "identity", fill = "pink", colour = "red") +
+  theme_bw()+
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.title = element_text(size=14), 
+        legend.text = element_text(size=12),
+        axis.text.x=element_text(size=12),
+        axis.text.y=element_text(size=12)) -> UbnSalPlot
+
+#US e sales
+treino_e_valid %>%
+  group_by(US) %>%
+  summarise(Sales = sum(Sales)) %>%
+  ggplot() +
+  geom_bar(aes(x=US,y=Sales), stat = "identity", fill = "lightgreen", colour ="green4") +
+  theme_bw()+
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.title = element_text(size=14), 
+        legend.text = element_text(size=12),
+        axis.text.x=element_text(size=12),
+        axis.text.y=element_text(size=12)) -> UsSalPlot
+```
+
+
+### Distribuição das variáveis numéricas em relação a variável reposta `Sales`
+```{r, fig.width= 12}
+
+ggarrange(plotlist = list(PdfSalPlot, IncSalPlot, PopSalPlot, AgeSalPlot))
+```
+
+### Distribuição das variáveis categóricas em relação a variável reposta `Sales`
+
+```{r grafcexp, fig.align='center', fig.cap="\\label{fig:gracfexp}Relação entre cada variável categórica e a variável Sales", fig.show='hold', fig.width = 12}
+
+
+ggarrange(plotlist = list(Slc1SalPlot, Slc2SalPlot, UsSalPlot, UbnSalPlot), ncol = 2, nrow = 2)
+```
+
+A Figura \ref{fig:grafnexp} permite observar visualmente como as covariáveis numéricas se relacionam com a variável resposta. Nota-se que há forte relação entre `PriceDif` e `Sales`: à medida que o produto da marca em questão é mais barato que o concorrente, há mais vendas, e vice versa. As demais não apresentam forte associação com a variável `Sales`.
+
+Segundo a Figura \ref{fig:grafcexp}, há grande diferença nas vendas de acordo com o nível das variáveis categóricas `ShelveLocGood`, `ShelveLocMedium` e `US`. Ou seja, estar numa posição boa, não estar numa posição média na prateleira, ou estar numa loja localizada nos Estados Unidos está associado a altos valores em `Sales`. A variável `Urban` não apresenta visualmente uma forte relação com a resposta.
+
+
+
+
+# Avaliação de modelos propostos
+
+
+Foram considerados então todos os 2^8-1=255 possíveis modelos de regressão linear (simples e múltipla) ajustados ao banco de dados de treino, os quais são apresentados na tabela a seguir:
+
+### Coleção de Modelos ajustados e os respectivos EQM de Treino e Validação
+
+```{r}
+#Ajusta todos os modelos 1 a 1 para cada variavel preditora
+restreino = regsubsets(Sales ~.- Advertising-Education, data = treino, nbest= 70, nvmax = 8, really.big = T)
+
+#Sumarisa os resultados do regsubsets
+sumrt = summary(restreino)
+
+
+predict.regsubsets = function(object, newdata, id, ...) {
+    form = as.formula(object$call[[2]])
+    mat = model.matrix(form, newdata)
+    coefi = coef(object, id = id)
+    mat[, names(coefi)] %*% coefi
+}
+
+EQM_Valid = rep(0,nrow(sumrt$which))
+for (i in 1:nrow(sumrt$which)) {
+  EQM_Valid[i] = (sum((predict.regsubsets(restreino, valid, i)-valid$Sales)^2)/nrow(valid))
+  
+}
+
+EQMs = cbind(Modelo = c(paste("Modelo", c(1:nrow(sumrt$which)))),sumrt$which,
+            EQM_Treino = format((sumrt$rss/nrow(treino)),digit=3), EQM_Valid =format(EQM_Valid, digits = 3))
+
+#Expressa a tabela com o
+kable(EQMs) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), font_size = 10) %>% 
+  scroll_box(height = "400px")
+```
+
+A tabela também apresenta o EQM de cada modelo referente aos dados de treino e aos dados de validação.
+
+No gráfico a seguir é possível observar a dispersão dos EQMs de treino. De acordo com a quantidade de preditoras, os pontos obedecem a ordem crescente de EQM, pois dado um número de covariáveis, a função `regsubsets` retorna ordenadamente do melhor ao pior modelo. Nesse caso, o modelo com o menor EQM é o `r as.data.frame(EQMs)$Modelo[which.min(as.data.frame(EQMs)$EQM_Treino)]`.
+
+
+### Distribuição dos EQM de treino em função dos Modelos ajustados,
+```{r, fig.width= 12}
+ggplot() +
+  geom_point(aes(x=1:255, y=as.numeric(as.data.frame(EQMs)$EQM_Treino), color= row.names(EQMs)))  +
+  geom_hline(aes(yintercept = min(as.numeric(as.data.frame(EQMs)$EQM_Treino))), colour = "red", show.legend = FALSE) +
+  geom_text(aes(x=247,y=-0.05+min(as.numeric(as.data.frame(EQMs)$EQM_Treino)),label=min(as.numeric(as.data.frame(EQMs)$EQM_Treino))), size = 3.5) +
+  scale_y_continuous(limits = c(0,1))+
+  labs(x = "Modelos ajustados", y = "Erro quadrático médio", color = "Covariáveis \n no modelo") + 
+  theme_bw()+
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.title = element_text(size=14), 
+        legend.text = element_text(size=12),
+        axis.text.x=element_text(size=12),
+        axis.text.y=element_text(size=12))
+```
+
+Entretanto, ao aplicar cada um dos modelos ao banco de dados de validação, esses EQMs mudam e é possivel observar uma dispersão diferente dos pontos e, consequentemente, o modelo com o menor EQM observado para o conjunto de validação é outro
+
+
+### Distribuição dos EQM de validação em função dos modelos ajustados.
+
+```{r, fig.width= 12}
+ggplot() +
+  geom_point(aes(x=1:255, y=as.numeric(as.data.frame(EQMs)$EQM_Valid), color= row.names(EQMs)))  +
+  geom_hline(aes(yintercept = min(as.numeric(as.data.frame(EQMs)$EQM_Valid))), colour = "red", show.legend = FALSE) +
+  geom_text(aes(x=222,y=-0.05+min(as.numeric(as.data.frame(EQMs)$EQM_Valid)),label=min(as.numeric(as.data.frame(EQMs)$EQM_Valid))), size = 3.5) +
+  scale_y_continuous(limits = c(0,1))+
+  labs(x = "Modelos ajustados", y = "Erro quadrático médio", color = "Covariáveis \n no modelo") + 
+  theme_bw()+
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.title = element_text(size=14), 
+        legend.text = element_text(size=12),
+        axis.text.x=element_text(size=12),
+        axis.text.y=element_text(size=12))
+```
+
+Nesse cenário, o `r as.data.frame(EQMs)$Modelo[which.min(as.data.frame(EQMs)$EQM_Valid)]` é o modelo com o menor EQM na validação, e é o escolhido como modelo final.
+
+
+
+### Modelo Final
+
+```{r}
+modelo_final = as.data.frame(EQMs)$Modelo[which.min(as.data.frame(EQMs)$EQM_Treino)]
+Modelo = lm(Sales ~.- Advertising -Education -Urban -US, data = treino_e_valid)
+EQM_Final = mean(Modelo$residuals ^2)
+EQM_Final_teste = mean((teste$Sales - predict(Modelo, newdata = teste))^2)
+```
+
+O modelo final encontrado foi `Y = -0.72 + 0.16X1 +0.07X2 - 0.24X3 - 0.64X4 + 1.7X5 + 0.65X6`, em que `X1`, `X2` , `X3`, `X4`, `X5` e `X6` representam respectivamente as variáveis `Income`, `Population`, `Age`, `PriceDif`, `ShelveLocGood` e `ShelveLocMedium` padronizadas. Esse modelo ajustado retornou um erro quadrático médio de `r round(EQM_Final,3)` em relação ao banco de dados de treino e validação. Utilizando os coeficientes encontrados, o modelo foi aplicado aos dados de teste, passando a apresentar um EQM de `r round(EQM_Final_teste,3)`.
+
+Todas as covariáveis se mostraram estatisticamente significantes a nível 5%, sendo que `Age` e `PriceDif` apresentam decrementos à `Sales`, ou seja, quanto maior a média de idade do local ou quanto mais caro é o produto em relação ao concorrente, piores são as vendas. Por outro lado, `Income` (renda da comunidade local) e `Population` (população local), são variáveis que impactam positivamente em `Sales` à medida que crescem, assim como `ShelveLocGood` e `ShelveLocMedium` afetam (caso o produto esteja numa posição razoável ou boa na prateleira).
+
+<!-- O modelo final deverá ser treinado utilizando, conjuntamente, os dados de treinamento e validação. Calcule o EQM deste modelo final nesses dados.  -->
+
+<!-- Apresente o modelo final e interprete os parâmetros (ou alguns mais relevantes). -->
+
+<!-- Calcule o EQM deste modelo final nos dados teste. -->
